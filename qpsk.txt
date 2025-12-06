@@ -1,0 +1,1159 @@
+timeseries Objesi Nedir?
+MATLAB'da timeseries özel bir veri tipidir.
+Normal array gibi değil, içinde birçok bilgi barındırır:
+
+timeseries objesi = {
+    .Data      → Asıl sinyal verisi (sayılar)
+    .Time      → Zaman bilgisi
+    .Name      → İsim
+    .Units     → Birim
+    ... vs
+}
+
+QPSK için Sembol Zamanlaması Senkronizasyonu 
+(Symbol Timing Synchronization for QPSK) projesi
+
+Bu proje, taşıyıcı fazının bilindiği ancak sembol zamanlamasının
+bilinmediği gerçekçi bir senaryoda,
+PLL (Faz Kilitlemeli Döngü) tabanlı bir 
+senkronizör tasarlamanızı hedefliyor.
+
+Workspace'de gördüğümüz:
+
+Class: timeseries ← Bu bana "bu normal array değil, özel bir obje" dedi
+
+MATLAB'da timeseries kullandıysam biliyorum:
+
+Timeseries objelerinde asıl veri .Data property'sinde saklanır
+Bu MATLAB standardı
+
+Bilmiyorsan nasıl öğrenirsin?
+
+Name: 'r'
+Time: [17989x1 double]    ← 17989 zaman noktası
+Data: [1x1x17989 double]  ← 17989 örnek VAR! ✓
+Data: [1x1x17989 double]
+
+Bu 3 boyutlu bir array (1x1x17989)
+Bizim 17989 sample'ımız burda!
+
+ Örnek:
+A = [1 2 3; 4 5 6];  % 2x3 matrix
+
+A(:)  % Tüm elemanları tek kolon yapar
+ Sonuç:
+ [1
+  4
+  2
+  5
+  3
+  6]
+
+: operatörü = "tüm elemanları al ve tek kolon vektör yap"
+
+Bizim signal şu anda [17989x1] boyutunda ZATEN kolon vektör olabilir. Ama bazen:
+
+[1x17989] (satır vektör)
+[17989x1] (kolon vektör)
+Veya başka boyutlarda olabilir
+
+Sorun: Sonraki işlemlerde (filter, multiply vs.)
+ MATLAB bazen kolon, bazen satır ister.
+ Karışıklık olmasın diye garantiye alıyorum
+
+Nereden Aklıma Geldi?
+Tecrübe!  Çok kez:
+matlabError: Matrix dimensions must agree.
+hatası aldım çünkü biri satır, biri kolon vektördü.
+
+Aslında Gerekli mi?
+Bakalım! Önce signal = squeeze(signal); yaptıktan sonra:
+matlabsize(signal)  % Boyutuna bak
+Eğer 17989  1 diyorsa → Zaten kolon, : gereksiz
+Eğer 1  17989 diyorsa → Satır vektör, : ile kolon yap
+Sen şimdi:
+matlabsignal = squeeze(r.Data);
+size(signal)  % Bana sonucu göster
+Boyut ne çıkıyor?
+
+
+NE YAPIYORUZ:
+
+signal (veya r(nT)) elimizdeki alınan sinyal - karışık bir sinyal
+Bu sinyalde QPSK bilgisi yüksek frekansta (taşıyıcıda) saklanmış.
+Biz onu düşük frekansa (baseband'e) çekmek istiyoruz.
+Nasıl?
+
+Sinyali cos ile çarpınca → I kısmı çıkar
+Sinyali sin ile çarpınca → Q kısmı çıkar
+
+Bu işleme downconversion (taşıyıcı kaldırma) deniyor.
+
+signal içinde mesela 17989 örnek var
+Her örneğin bir zaman indeksi olması lazım: 0, 1, 2, 3, ..., 17988
+cos(2*pi*fc*n) → Bu cosinus'u her zaman anında hesaplamak için n lazım
+
+Sonra signal .* cos(...) → Her örneği kendi zamanındaki cosinus ile çarpıyoruz.
+
+FIR Filtre (SRRC Matched Filter)
+Diyagramda gördüğün h(nT) = p(-nT) → Bu SRRC filtresi
+
+rcosdesign → SRRC filtresi oluştur
+conv → r_i ve r_q'yu filtrele
+Gecikmeyi kaldır (filtreleme gecikme yaratır)
+
+ (8→2 samples/symbol)
+
+2. **`'sqrt'` NEDİR?**
+
+SRRC = **Square Root Raised Cosine**
+- `rcosdesign(alpha, span, sps, 'sqrt')` → SRRC filtresi yap demek
+
+3. **`h = h / max(abs(h))` NEDEN?**
+
+**Normalize etmek için!**
+- Filtrenin en büyük değeri 1 olsun
+- Sinyal çok büyümesin/küçülmesin
+
+ 4. **`delay` NEDİR?**
+
+Filtre **gecikme** yaratır!
+
+**ÖRNEK:**
+```
+Giriş:  [1, 2, 3, 4, 5]
+Filtre: 51 uzunluğunda
+
+conv sonrası: [?, ?, ...25 değer..., 1, 2, 3, 4, 5, ...25 değer..., ?]
+              ↑                      ↑
+              başında padding        orijinal sinyal ortada
+delay = (51-1)/2 = 25
+
+Baştan 25 örneği at
+Sondan 25 örneği at
+Ortadaki orijinal sinyali al
+
+5. NEDEN (length(h)-1)/2?
+Filtre simetrik! Ortası = (uzunluk-1)/2
+
+
+sps = 4 NEREDEN?
+QPSK'da:
+
+2 bit = 1 sembol
+8 samples/bit × 2 bit = 16 samples / 2 sembol = 8 samples/symbol
+
+Ama sonra downsampling yapacağız (÷2), o yüzden:
+
+8 ÷ 2 = 4 samples/symbol (matched filter için)
+
+1. Filtre padding ekliyor (suni veri):
+conv() fonksiyonu filtre uygularken başa ve sona sıfırlar ekler.
+Bunlar bizim gerçek verimiz değil, 
+filtrenin matematiksel işlemi için gerekli padding!
+
+1. Filtre padding ekliyor (suni veri):
+conv() fonksiyonu filtre uygularken başa ve sona sıfırlar ekler.
+Bunlar bizim gerçek verimiz değil, 
+filtrenin matematiksel işlemi için gerekli padding!
+
+ÖRNEK:
+
+Gerçek veri:     [5, 3, 8, 2, 9]           → 5 değer
+Filtre uzunluğu: 51
+
+conv sonrası:    [0,0,0,...25 sıfır, 5,3,8,2,9, ...25 sıfır, 0,0,0]
+                 ↑ FAKE           ↑ GERÇEK     ↑ FAKE
+                 (filtre başlangıcı)          (filtre sonu)
+
+2. Ortadaki kısım = Gerçek filtrelenmiş veri!
+Başındaki 25 ve sondaki 25 gereksiz padding, onu atıyoruz
+
+NEREDEN ANLADIM?
+Diyagramdan değil! Bu standart dijital sinyal işleme tekniği.
+Her FIR filtre gecikme yaratır:
+
+Filtre uzunluğu = N → Gecikme = (N-1)/2
+Bu matematikte group delay denir
+
+ATTIĞIMIZ VERİ ÖNEMLİ Mİ?
+HAYIR! Çünkü:
+
+Başta Training Sequence var (1000 bit) - onlar zaten çöp
+Biz sadece SYNC ve DATA kısmını istiyoruz
+Padding kısmı zaten gerçek veri değil
+
+
+Matched Filter = Gürültüyü azaltmak ve sinyali temizlemek için!
+Açıklama:
+
+Verici tarafında sinyal SRRC ile şekillendirilmiş
+Alıcı tarafında aynı SRRC ile filtreliyoruz
+İkisi birleşince → Raised Cosine oluyor (optimal!)
+Bu gürültüyü minimize eder, sinyali maksimize eder
+
+Matematiksel:
+Verici:    data → SRRC → kanal → gürültü eklenmiş sinyal
+Alıcı:     gürültülü sinyal → SRRC (matched filter) → temiz data
+
+
+r(nT) → ⊗ (cos ile çarp) → [FIR] → x(nT)
+                           ↑
+                        h(nT) filtresi
+x(nT) = mf_i (matched filter çıkışı - I branch)
+y(nT) = mf_q (matched filter çıkışı - Q branch)
+
+ÖZET: conv(r_i, h) = Diyagramdaki FIR bloğu. Sinyali temizliyor!
+
+1. Filtre tasarımı:
+
+h = rcosdesign(alpha, span, sps, 'sqrt');
+
+h = h / max(abs(h));
+
+Bu filtre katsayılarını oluşturuyor. Yani h(nT) = p(-nT) bu!
+
+2. Filtreleme işlemi:
+
+mf_i = conv(r_i, h);  ← Bu FIR bloğunun kendisi (I için)
+mf_q = conv(r_q, h);  ← Bu FIR bloğunun kendisi (Q için),
+
+FIR = Finite Impulse Response (Sonlu Dürtü Yanıtı)
+FIR filtre = Bir sinyali filtre katsayıları ile konvolüsyon yapmak
+FIR filtreleme = conv(sinyal, filtre_katsayıları)
+
+1. Filtre Tasarımı (katsayıları bul)
+matlabh = rcosdesign(alpha, span, sps, 'sqrt');  ← Katsayıları hesapla
+Bu h = [0.01, 0.03, 0.05, ..., 0.05, 0.03, 0.01] gibi bir dizi
+2. Filtreleme (sinyali filtrele)
+mf_i = conv(r_i, h);  ← Sinyali h ile konvolüsyon yap
+```
+Bu **asıl filtreleme işlemi**
+
+---
+
+## NEDEN YAPIYORUZ?
+
+**Konvolüsyon = Filtreleme!**
+
+`conv(r_i, h)` şunu yapar:
+```
+r_i'nin her örneğini, h'nin katsayıları ile ağırlıklı topla
+→ Sonuç = Filtrelenmiş sinyal (gürültü azalmış, temiz)
+
+**Matematiksel:**
+y[n] = Σ r_i[k] × h[n-k]  (konvolüsyon formülü)
+
+DİYAGRAMDA:
+
+[FIR] bloğu = conv() işlemi
+FIR bloğunun içinde zaten konvolüsyon var!
+
+ÖZET:
+
+h = rcosdesign(...) → Filtre katsayılarını bul
+conv(r_i, h) → Filtreleme işlemini yap (FIR'ın kendisi)
+
+İkisi birlikte = FIR filtreleme
+
+SIRADAKI ADIM: DOWNSAMPLING
+Diyagramda gör:
+[FIR] → N/÷2 → interpolator
+        ↑
+    (downsampling)
+Ne yapıyor?
+
+Şu an: 8 samples/symbol (çok fazla!)
+Hedef: 2 samples/symbol (TED için gerekli)
+Nasıl? 4'te bir örnek al (8÷4 = 2)
+
+Ne yapıyor?
+
+1:4:end → Her 4. örneği al (1, 5, 9, 13, 17, ...)
+Gerisi atılıyor
+
+
+NEDEN?
+Diyagramda yazdığı gibi:
+
+8 samples/symbol → FIR çıkışı
+2 samples/symbol → Timing loop için gerekli
+Early-Late TED 2 samples/symbol'de çalış
+
+DOWNSAMPLING ≠ BÖLME!
+Downsampling = Örnekleri atlama!
+
+MANTIK:
+Şu an elimizde: [a, b, c, d, e, f, g, h, i, j, k, l, ...] (8 samples/symbol)
+2'ye downsampling demek:
+
+Her 2'de biri atılacak değil!
+2 samples/symbol kalacak demek!
+
+
+HESAP:
+Başlangıç: 8 samples/symbol
+Hedef:     2 samples/symbol
+
+Kaça bölmeliyiz? 8 ÷ 2 = 4
+
+Yani her 4. örneği al!
+
+
+
+ÖZET:
+
+8 samples/symbol → 2 samples/symbol = 4'te bir al
+2'ye downsampling = 4'e böl değil, 2 samples kalacak şekilde ayarla!
+Diyelim 1 sembol için 8 örnek var:
+Sembol 1: [a, b, c, d, e, f, g, h]  ← 8 örnek
+Hedef: Bu sembol için sadece 2 örnek kalacak!
+
+NASIL?
+8 örneği → 2 örneğe indirmek için kaç tanesini atlayacağız?
+8 örnek var
+2 örnek istiyoruz
+8 ÷ 2 = 4  ← Her 4. örneği almalıyız!
+
+SIRADA NE VAR?
+Diyagramda sağ tarafta büyük bir LOOP (döngü) var:
+interpolator → TED → F(z) → mod-1 counter → scale → hold
+      ↑                                                ↓
+      └────────────────────────────────────────────────┘
+                        (geri besleme)
+Bu Timing Recovery PLL (Zamanlama Kurtarma Döngüsü)!
+
+Diyagramda F(z) bloğu → Bu Loop Filter!
+Loop filter 2. dereceden PI (Proportional-Integral) controller:
+
+K1 → Proportional gain
+K2 → Integral gain
+
+Bu değerler PLL'in ne kadar hızlı/stabil kilitleneceğini belirler!
+
+Döngü Filtresi (Loop Filter) Tasarımı:
+İkinci dereceden bir döngü (second-order loop) oluşturmalısınız.
+Spesifikasyonlar:Kapalı döngü eşdeğer gürültü bant genişliği
+(Normalized Loop Bandwidth): B_n T = 0.01
+Sönümleme faktörü (Damping Factor, zeta: 0.7071
+Amaç: PLL'in ne kadar hızlı ve 
+ne kadar stabil kilitleneceğini ayarlamak!
+
+ANALOJİ: ARABA SÜRMEYİ DÜŞÜN
+Bir arabayı park ediyorsun:
+
+K1 (Proportional gain) → Direksiyon hassasiyeti
+
+Büyükse: Hızlı tepki verir ama sallanır
+Küçükse: Yavaş ama stabil
+
+
+K2 (Integral gain) → Hatayı düzeltme gücü
+
+Büyükse: Hatayı hızlı sıfırlar
+Küçükse: Yavaş düzeltir
+
+Bu formüller 2. derece PLL teorisinden geliyor (Michael Rice'ın kitabından).
+Basit açıklama:
+normalized_bandwidth = PLL ne kadar hızlı?
+damping_factor = PLL ne kadar sallanır?
+
+Bu 2 değerden → K1 ve K2 hesapla
+
+theta = normalized_bandwidth / (damping_factor + 1/(4*damping_factor));
+
+Bu ara hesap (intermediate step)
+PLL'in doğal frekansını normalize eder
+Kitaptaki formülden geliyor
+
+d:
+d = 1 + 2*damping_factor*theta + theta^2;
+
+Normalizasyon faktörü
+K1 ve K2'yi hesaplamak için payda
+
+K1 ve K2:
+K1 = (4*damping_factor*theta) / d;
+K2 = (4*theta^2) / d;
+
+Loop filter kazançları
+K1 → Anlık hatayı düzeltir (proportional)
+K2 → Birikmiş hatayı düzeltir (integral)
+
+İleriki kodda timing loop'ta kullanacağız:
+
+K1, K2 → PLL'in beyni!
+Bunlar olmadan timing kurtarma çalışmaz
+Formüller karmaşık ama Michael Rice'ın kitabından hazır formül
+Sen sadece kullan! 
+
+% Timing PLL Parametreleri
+normalized_bandwidth = 0.01;    % BnTs (normalize gürültü bant genişliği)
+damping_factor = 0.7071;        % zeta (sönümleme faktörü)
+
+% Loop Filter Kazançları
+theta = normalized_bandwidth / (damping_factor + 1/(4*damping_factor));
+d = 1 + 2*damping_factor*theta + theta^2;
+K1 = (4*damping_factor*theta) / d;
+K2 = (4*theta^2) / d;
+
+F(z) = Loop Filter bloğu!
+
+NE YAPTIK?
+K1 ve K2 hesapladık → Bunlar F(z) bloğunun parametreleri!
+
+F(z) BLOĞU NE YAPAR?
+Loop Filter = PI Controller (Proportional + Integral)
+Giriş: e (TED'den gelen hata)
+
+Yaptığımız kod → F(z) bloğunun tasarımı
+K1, K2 → F(z)'nin kazançları
+Henüz kullanmadık, sadece hesapladık!
+İlerki while loop'ta TED çıkışını F(z) ile işleyeceğiz.
+
+F(z) içinde:
+  vp = K1 × e      ← Proportional kısım (K1 kullanıldı!)
+  vi = vi + K2 × e  ← Integral kısım (K2 kullanıldı!)
+  
+Çıkış: vp + vi
+
+EN ÖNEMLİ KISIM: Timing Recovery Loop
+
+Diyagramın sağ tarafındaki büyük döngü:
+
+interpolator → decision → TED → F(z) → mod-1 counter → μ
+      ↑                                                  ↓
+      └──────────────────────────────────────────────────┘
+
+Bu döngü sembol zamanlamasını bulacak!
+
+1. Farrow Interpolator NEDİR? NEDEN?
+Problem: Elimizde 2 samples/symbol var ama sembol sınırlarını bilmiyoruz!
+Örnek:
+Örnekler: [a, b, c, d, e, f, g, h, ...]
+           ↑     ↑     ↑
+        Sembol 1'in başı nerede? Bilmiyoruz!
+
+Çözüm: İki örnek arasında interpolasyon yap!
+Farrow Interpolator:
+
+Elimizdeki örneklerin arasındaki değeri hesaplar
+μ (mu) değerine göre arada bir nokta bulu
+
+Görsel:
+Örnek:  [... , a,  ?,  b,  ?,  c, ...]
+               ↑   ↑   ↑
+            μ=0  μ=0.3  μ=1
+μ = 0.3 → a ve b arasında %30'luk noktayı hesapla
+
+İNTERPOLASYON NEDİR?
+Diyelim elimizde sadece 2 örnek var:
+
+a = 2  (t=0 anında)
+b = 8  (t=1 anında)
+Soru: t=0.5 anında değer ne?
+Cevap (doğrusal interpolasyon):
+t=0.5 → Ortada → (2+8)/2 = 5
+
+μ (MU) NEDİR?
+μ = Araya ne kadar giriyoruz?
+μ = 0.0 → Tam a noktasında (değer = 2)
+μ = 0.5 → Ortada (değer = 5)
+μ = 1.0 → Tam b noktasında (değer = 8)
+Formül:
+değer = a + μ × (b - a)
+
+μ=0.0 → 2 + 0.0×(8-2) = 2
+μ=0.5 → 2 + 0.5×(8-2) = 5
+μ=1.0 → 2 + 1.0×(8-2) = 8
+
+FARROW İNTERPOLATÖR NEDEN FARKLI?
+Daha hassas! 4 örnek kullanır (2 değil):
+[a, b, c, d]
+Piecewise Parabolic (parabolik):
+değer = v0 + v1×μ + v2×μ²
+
+v0 = b
+v1 = 0.5×(c - a)
+v2 = 0.5×(c + a) - b
+Bu daha pürüzsüz interpolasyon verir!
+
+SEMBOL SINIRI NASIL BULUNUYOR?
+Asıl numara: μ'yu sürekli azaltıyoruz!
+Başlangıç: μ = 0.7
+Adım 1: μ = 0.7 - W (diyelim W=1.0) → μ = -0.3 ← UNDERFLOW!
+Adım 2: μ < 0 oldu → μ = μ + 1 = 0.7
+        strobe = 1 → "YENİ SEMBOL BULUNDU!"
+Mantık:
+
+μ sıfırın altına düştü = Bir sembol periyodu geçti
+İşte o an = Sembol sınırı!
+
+İnterpolasyon = Örnekler arası değer hesapla
+μ = Araya ne kadar giriyoruz? (0 ile 1 arası)
+μ < 0 olunca = Sembol sınırı bulundu!
+Farrow = 4 nokta kullanarak hassas interpolasyon
+
+PROBLEM: SEMBOL SINIRINI BİLMİYORUZ!
+Diyelim vericiden şu semboller geldi:
+Sembol 1: +1
+Sembol 2: -1
+Sembol 3: +1
+Ama bize ulaşan örnekler şöyle (8 örnek/sembol):
+Örnekler: [0.9, 1.1, 0.8, 1.2, -0.9, -1.1, -0.8, -1.2, 0.9, 1.1, ...]
+           └────── Sembol 1? ──────┘└────── Sembol 2? ──────┘
+Soru: Sembol 1 nerede bitiyor, Sembol 2 nerede başlıyor? BİLMİYORUZ!
+
+
+ÇÖZÜM: MOD-1 COUNTER
+Bir sayaç tutacağız. Bu sayaç 1'den geriye sayacak.
+Sayaç başlangıç: μ = 0.3 (rastgele bir başlangıç)
+Kural: Her örnekte W kadar azalt (W genelde ≈1.0)
+
+μ = Bir sayaç (0 ile 1 arası)
+Her örnekte μ'dan W çıkar
+μ < 0 oldu mu? → "YENİ SEMBOL BULDUM!" diye bağır (strobe=1)
+μ'yu yenile (μ = μ + 1)
+Tekrar et
+
+W değişince → Semboller farklı yerlerde bulunur!
+
+1. PROBLEM: SEMBOL SINIRLARINI BİLMİYORUZVericiden semboller geliyor:Gerçek semboller: [+1, -1, +1, -1, ...]
+                   S1  S2  S3  S4Ama bize örnekler (samples) ulaşıyor:8 örnek/sembol gelirse:
+
+[0.9, 1.0, 1.1, 0.8, -0.9, -1.0, -1.1, -0.8, 0.9, 1.0, ...]
+ └────────── S1 ────────┘ └───────── S2 ──────────┘
+
+SORU: Sembol 1 nerede bitiyor? BİLMİYORUZ!
+Belki şurada:
+[0.9, 1.0, 1.1 | 0.8, -0.9, ...]  ← Yanlış yer!
+Belki şurada:
+[0.9, 1.0, 1.1, 0.8 | -0.9, ...]  ← Doğru yer!
+Bilmiyoruz! 
+
+2. NEDEN İNTERPOLASYON?
+Downsampling yaptık (8 → 2 samples/symbol):
+Artık elimizde: [a, b, c, d, e, f, g, h, ...]
+                 └S1?┘ └S2?┘ └S3?┘
+Problem: Sembol sınırı a'da mı, a ile b arasında mı, b'de mi?
+İhtimal 1: a │ b  c  d   ← Sembol sınırı tam a'da
+İhtimal 2: a  (?) │ b  c  d   ← Sembol sınırı a ile b ARASI!
+İhtimal 3: a  b │ c  d   ← Sembol sınırı tam b'de
+Çözüm: Arada bir nokta hesaplayalım!
+
+3. İNTERPOLASYON NEDİR?
+İki nokta arasındaki değeri tahmin etmek!
+
+BASIT ÖRNEK: SICAKLIK
+Saat 10:00 → Sıcaklık = 20°C
+Saat 12:00 → Sıcaklık = 30°C
+Soru: Saat 11:00'de kaç derece?
+Cevap (tahmin):
+Ortada → (20 + 30) / 2 = 25°C
+Bu interpolasyon! İki ölçüm arasındaki değeri tahmin ettik!
+
+
+4. FARROW İNTERPOLATÖR NASIL ÇALIŞIR?
+ADIM 1: μ (MU) BELİRLE
+μ = Araya ne kadar giriyoruz?
+a = 2.0
+b = 8.0
+
+μ = 0.0 → Tam a noktasında → değer = 2.0
+μ = 0.3 → a'dan %30 b'ye → değer = ?
+μ = 0.5 → Tam ortada → değer = 5.0
+μ = 1.0 → Tam b noktasında → değer = 8.0
+
+
+ADIM 2: İNTERPOLE ET (HESAPLA)
+Basit formül (doğrusal):
+değer = a + μ × (b - a)
+μ = 0.3 için:
+değer = 2 + 0.3 × (8 - 2)
+      = 2 + 0.3 × 6
+      = 2 + 1.8
+      = 3.8
+
+ADIM 3: FARROW DAHA İYİSİNİ YAPAR!
+Basit interpolasyon 2 nokta kullanır (a, b).
+Farrow interpolatör 4 nokta kullanır (a, b, c, d) → Daha hassas!
+[a, b, c, d]
+    ↑ ↑
+  b ile c arasını hesapla, ama a ve d'yi de kullan!
+Formül (piecewise parabolic):
+değer = v0 + v1×μ + v2×μ²
+
+v0 = b              ← Orta nokta
+v1 = 0.5×(c - a)    ← Eğim
+v2 = 0.5×(c + a) - b ← Eğrilik
+Neden daha iyi? Çünkü parabolik (eğri), doğrusal değil!
+
+5. NEDEN FARROW İNTERPOLATÖR?
+Problem: Örnekler yanlış yerde!
+Gerçek sembol sınırı:
+            ↓
+[... a   b   c   d   e   f ...]
+         ↑
+     Ama biz b'de örnekliyoruz!
+Çözüm: b ve c arasında μ=0.3 noktasını hesapla!
+            ↓ (gerçek sınır)
+[... a   b  (?) c   d   e ...]
+            ↑
+        μ=0.3'luk nokta
+Bu noktada karar verirsek doğru sembole ulaşırız!
+
+Problem: Sembol sınırı nerede bilmiyoruz
+Çözüm: İki örnek arasında hesap yapalım
+Nasıl? μ değerine göre aradaki değeri bul
+Farrow: 4 nokta kullanarak hassas hesap yapar
+Sonuç: Doğru yerdeki sembol değerini buluruz!
+
+2. mod-1 counter NEDİR? NEDEN?
+mod-1 counter = 0 ile 1 arasında sayan sayaç
+Ne yapar?
+μ = μ - W
+
+Eğer μ < 0 ise:
+    μ = μ + 1
+    strobe = 1  ← YENİ SEMBOL HAZIR!
+Mantık: W kadar azalt, sıfırın altına düştüğünde yeni sembol bulundu demek!
+
+3. strobe NEDİR? NEDEN?
+strobe = "Yeni sembol hazır!" sinyali
+strobe = 0 → Henüz hazır değil
+strobe = 1 → YENİ SEMBOL BULUNDU! Karar ver!
+
+İnterpolatör sürekli çalışıyor
+Ama karar verme sadece sembol anında olmalı!
+strobe → "Şimdi karar ver!" diyor
+
+4. Decision NEDİR? NEDEN?
+Decision = İnterpolatör çıkışına bakıp sembolü tahmin et
+QPSK'da:
+yi > 0 → bit = 1
+yi < 0 → bit = 0
+Neden? Çünkü amacımız veriyi çıkarmak! Karar vermeden bit bulamayız.
+
+5. TED NEDİR? NEDEN?
+TED = Timing Error Detector (Zamanlama Hatası Dedektörü)
+Ne yapar?
+Şimdiki örnek - Önceki örnek × Karar = Hata
+Mantık:
+
+Eğer zamanlama doğruysa → TED çıkışı ≈ 0
+Eğer zamanlama yanlışsa → TED çıkışı ≠ 0 (hata var!)
+
+Neden? PLL'e "ne kadar yanlışsın" bilgisini vermek için!
+
+6. Loop Filter NEDİR? NEDEN?
+TED'den gelen hatayı düzelt!
+Hata geldi → K1, K2 ile işle → W'yi güncelle
+W = İnterpolatörün hızını kontrol eder!
+
+Hata büyükse → W değiştir → Zamanlama düzelt
+
+7. μ (mu) NEDİR? NEDEN GÜNCELLİYORUZ?
+μ = Kesirli interpolasyon aralığı (0 ile 1 arası)
+Mantık:
+μ = 0.0 → Örneklerin tam başında
+μ = 0.5 → Örneklerin ortasında
+μ = 1.0 → Örneklerin sonunda
+Neden güncelliyoruz?
+
+Zamanlama hatasına göre μ'yu ayarla
+Böylece doğru sembol anını bul!
+
+1. Farrow Interpolator → Örnekler arası değer hesapla (μ'ye göre)
+2. mod-1 counter → μ'yu azalt, sıfırın altına düştüğünde strobe üret
+3. strobe aktifse:
+   a. Decision → Sembol kararı ver
+   b. TED → Zamanlama hatası hesapla
+   c. Loop Filter → Hatayı K1, K2 ile işle
+   d. W güncelle → İnterpolatör hızını ayarla
+4. μ güncelle → Yeni kesirli aralık
+5. Tekrar et
+
+HEDEF: Bilinmeyen sembol zamanlamasını otomatik olarak bul!
+
+4. NEDEN +100?
+Güvenlik payı!
+Sebep 1: Timing loop kararsız başlar
+
+İlk birkaç sembol yanlış bulunabilir
+Bazı semboller atlanabilir
+
+Sebep 2: Taşma önleme
+
+Eğer tam 2000 sembol bekliyorsak
+Ama 2005 sembol bulursak → Dizi taşar! 
+
+decisions_i = zeros(max_symbols, 1);  ← Boş dizi oluştur
+```
+
+**+100** eklersek:
+```
+max_symbols = 2000 + 100 = 2100
+
+2100 uzunlukta dizi → 2005 sembol bulsak bile problem yok
+## 6. **NEDEN TAM OLARAK HESAPLAMIYORUZ?**
+
+Çünkü **timing loop** dinamik!
+```
+İdeal durumda: 2 örnek → 1 sembol
+Gerçekte: 
+  - Bazen 1.9 örnek → 1 sembol
+  - Bazen 2.1 örnek → 1 sembol
+  - PLL kilitlendikçe → 2.0'a yaklaşır
+
+
+
+
+Zamanlama Hatası Dedektörü (TED):
+
+Early-Late TED kullanmanız öneriliyor.
+ Bu, sembol başına 2 örnekte çalışır,
+ bu nedenle 8 örnek/sembol olan 
+giriş sinyalini 4 kat downsample yapmanız gerekecek.
+
+Enterpolasyon (Interpolation):
+
+Farrow Enterpolatörü kullanmalısınız
+(Parçalı parabolik veya kübik versiyonu).
+
+Kontrol için "decrementing modulo-1 counter"
+ (azalan mod-1 sayacı) kullanın. 
+Bu sayacın "underflow" (alt sınır ihlali)
+ durumu sizin "strobe" sinyaliniz olacak.
+
+
+
+
+ 16 bitlik (8 sembol) 
+SYNC desenini (1 0 1 0 1 0 1 0 0 1 0 1 0 1 0 1) aramanız gerekiyor.
+
+SYNC desenini bulduktan sonra gelen 1729 sembolü, 247 adet 7-bit ASCII karaktere dönüştürerek gizli mesajı bulacaksınız.
+
+Farrow interpolatör** (piecewise parabolic) **4 örnek** kullanır!
+
+Rice'ın kitabında (Figure 8.4.17) diyor ki:
+```
+Farrow interpolator needs 4 consecutive samples:
+[y[k-1], y[k], y[k+1], y[k+2]]
+
+**Formül:**
+```
+v0 = y[k]
+v1 = 0.5 * (y[k+1] - y[k-1])
+v2 = 0.5 * (y[k+1] + y[k-1]) - y[k]
+
+
+Her döngüde 4 ardışık örneği buffer'a alıyoruz:
+
+% idx = 5 diyelim
+buffer_i = [mf_i_ds(5);   % k-1
+            mf_i_ds(6);   % k
+            mf_i_ds(7);   % k+1
+            mf_i_ds(8)];  % k+2
+
+**Piecewise Parabolic** interpolasyon **2. derece polinom** kullanır:
+```
+y(μ) = c0 + c1·μ + c2·μ²
+3 katsayı (c0, c1, c2) hesaplamak için en az 3 nokta lazım.
+
+Ama daha iyi sonuç için 4 nokta kullanılır:
+
+2 nokta ortada (y[k], y[k+1])
+2 nokta yanında (y[k-1], y[k+2])
+
+Bu pürüzsüz interpolasyon verir!
+
+TED formülü (Early-Late):
+e[k] = (y[k] - y[k-1]) × d[k]
+       ↑       ↑
+    şimdiki  önceki
+
+y[k] = Şimdiki interpolatör çıkışı
+y[k-1] = Önceki interpolatör çıkışı
+d[k] = Karar (decision)
+
+Önceki örneği bilmeden TED hesaplayamayız!
+
+Döngü 1:
+  interp_i = 0.8  (şimdiki)
+  prev_i = 0      (önceki yok, 0 başladık)
+  TED = (0.8 - 0) × decision
+
+Döngü 2:
+  interp_i = 0.9  (şimdiki)
+  prev_i = 0.8    (döngü 1'den kaydet!)
+  TED = (0.9 - 0.8) × decision  ← Fark çok küçük, timing iyi!
+
+Döngü 3:
+  interp_i = -0.2  (şimdiki)
+  prev_i = 0.9     (döngü 2'den kaydet!)
+  TED = (-0.2 - 0.9) × decision  ← Büyük değişim, timing kötü!
+
+while idx <= N-3
+    buffer = mf_i_ds(idx:idx+3);  % 4 örnek al
+    
+    % ... interpolasyon, TED, vs ...
+    
+    idx = idx + 1;  ← Bir sonraki örneğe geç!
+end
+
+1. NEDEN N-3?
+Çünkü Farrow interpolatör 4 örnek kullanıyor!
+matlabbuffer_i = [mf_i_ds(idx); 
+            mf_i_ds(idx+1); 
+            mf_i_ds(idx+2); 
+            mf_i_ds(idx+3)];
+```
+
+**idx+3** kullanıyoruz! Yani **3 örnek ileri** bakıyoruz!
+
+---
+
+### PROBLEM: TAŞMA!
+```
+N = 4000 örnek var
+
+idx = 3998 olsaydı:
+  buffer = [mf_i_ds(3998), 
+            mf_i_ds(3999), 
+            mf_i_ds(4000), 
+            mf_i_ds(4001)]  ← 4001 YOK! HATA! 
+
+while idx <= N-3
+```
+
+**Mantık:**
+```
+N = 4000
+idx <= 4000 - 3
+idx <= 3997  ← En fazla 3997'ye kadar!
+
+idx = 3997 olunca:
+  buffer = [mf_i_ds(3997), 
+            mf_i_ds(3998), 
+            mf_i_ds(3999), 
+            mf_i_ds(4000)]  ← Hepsi var! 
+
+
+2. symbol_count NEDİR?
+Kaç sembol bulduğumuzu sayan sayaç!
+matlabsymbol_count = 0;  % Başlangıç
+
+while ...
+    if strobe
+        symbol_count = symbol_count + 1;  ← Her sembol bulunca +1
+        decisions_i(symbol_count) = sign(interp_i);
+        decisions_q(symbol_count) = sign(interp_q);
+    end
+end
+Her strobe = 1 yeni sembol bulundu!
+
+3. max_symbols NEDİR?
+matlabmax_symbols = ceil(N/2) + 100;  % Örnek: 2100
+Maksimum kaç sembol bulabiliriz?
+Dizilerimiz bu kadar:
+matlabdecisions_i = zeros(max_symbols, 1);  % 2100 uzunlukta
+decisions_q = zeros(max_symbols, 1);
+```
+
+---
+
+## 4. **NEDEN symbol_count < max_symbols?**
+
+**Taşma önleme!**
+```
+max_symbols = 2100
+
+Eğer symbol_count = 2101 olursa:
+  decisions_i(2101) = ...  ← DİZİ 2100, 2101 YOK! HATA! 💥
+Çözüm:
+matlabwhile idx <= N-3 && symbol_count < max_symbols
+symbol_count = 2099 olunca döngü durur! Taşma olmaz! ✓
+
+5. İKİ KOŞUL BİRDEN - NEDEN &&?
+matlabwhile idx <= N-3 && symbol_count < max_symbols
+```
+
+**İki koşuldan BİRİ** false olunca döngü durur:
+
+**Durum 1:** `idx > N-3` → Örnekler bitti!
+```
+idx = 3998 oldu → Döngü dur! (daha fazla örnek yok)
+```
+
+**Durum 2:** `symbol_count >= max_symbols` → Dizi doldu!
+```
+symbol_count = 2100 oldu → Döngü dur! (dizi taşar!)
+```
+
+---
+
+## 6. **GÖRSEL ÖRNEK:**
+```
+N = 10 örnek var
+max_symbols = 5
+
+idx = 1, 2, 3, 4, 5, 6, 7 olabilir (7 <= 10-3 ✓)
+symbol_count = 0, 1, 2, 3, 4 olabilir (4 < 5 ✓)
+
+idx = 8 olunca → 8 <= 7? HAYIR! → DUR!
+veya
+symbol_count = 5 olunca → 5 < 5? HAYIR! → DUR!
+
+7. TAM KOD AKIŞI:
+matlabN = 4000
+max_symbols = 2100
+idx = 1
+symbol_count = 0
+
+while idx <= 3997 && symbol_count < 2100
+    % buffer al
+    buffer = mf_i_ds(idx:idx+3);
+    
+    % interpolasyon
+    ...
+    
+    if strobe
+        symbol_count = symbol_count + 1;  % 1, 2, 3, ...
+        decisions_i(symbol_count) = ...   % [1], [2], [3], ...
+    end
+    
+    idx = idx + 1;  # 2, 3, 4, ...
+end
+
+% Döngü biter çünkü:
+% - idx = 3998 oldu (3998 > 3997) VEYA
+# - symbol_count = 2100 oldu (2100 >= 2100)
+
+ÖZET:
+KoşulNeden?Ne olur?idx <= N-3Farrow 4 örnek kullanır, idx+3 taşmamalıidx çok büyürse dursymbol_count < max_symbolsDiziler max_symbols uzunluktaDizi dolunca dur&& (VE)İkisinden BİRİ false olunca durGüvenli döngü
+
+Basit cevap:
+
+N-3 → idx+3 taşmasın (Farrow 4 örnek kullanır)
+symbol_count < max_symbols → Dizi taşmasın
+
+1. NE YAPIYORUZ?
+
+İki örnek arasındaki değeri hesaplıyoruz
+
+Parabolik interpolasyon formülü:
+
+y(μ) = v0 + v1·μ + v2·μ²
+μ = 0 ile 1 arası
+(ne kadar araya giriyoruz?)
+v0, v1, v2 = Katsayılar (hesaplanacak!)
+
+buffer_i = [buffer_i(1),   % y[k-1] (önceki)
+            buffer_i(2),   % y[k]   (şu anki - BASE)
+            buffer_i(3),   % y[k+1] (sonraki)
+            buffer_i(4)]   % y[k+2] (daha sonraki)
+
+
+v0_i = buffer_i(2);  % y[k]
+```
+
+**v0 = y[k]** (Base point - temel nokta)
+
+**Mantık:**
+```
+μ = 0 olunca:
+y(0) = v0 + v1·0 + v2·0² = v0
+
+Yani μ=0 → Tam y[k] noktasında!
+
+
+### **Rice'ın Kitabı - Section 8.4.3:**
+
+"For interpolation control, use the decrementing modulo-1 counter described in Section 8.4.3" 
+
+**Kitapta der ki:**
+> "The modulo-1 counter maintains a fractional interval **μ ∈ [0,1)**"
+
+**Başlangıç değeri:** 0 ile 1 arası **herhangi bir değer** olabilir!
+
+**Yaygın seçimler:**
+- μ = 0.0 (en basit)
+- μ = 0.5 (ortadan başla)
+- μ = rand() (rastgele)
+
+**Neden 0.0 seçtik?**
+- **Basitlik**
+- **Literatürde yaygın**
+- PLL kilitlenince **değer otomatik ayarlanır**, başlangıç önemli değil!
+
+---
+
+## 3. **NEDEN W = 1.0 BAŞLANGIÇ?**
+
+### **Rice'ın Kitabı - Section 8.4.3 (Modulo-1 Counter):**
+
+Kitapta **NCO (Numerically Controlled Oscillator)** kontrolünden bahseder:
+
+> "The NCO control word **W** represents the **sampling rate mismatch**"
+
+**W = 1.0** → "Nominal" hız (ideal saat)
+
+**Mantık:**
+```
+W = Tsymbol / Tsample  (normalize)
+
+İdeal durumda: W = 1.0
+
+
+## 4. **mu NASIL DEĞİŞİYOR?**
+
+### **Rice'ın Kitabı - Section 8.4.3:**
+
+**Decrementing Modulo-1 Counter algoritması:**
+```
+μ[n+1] = μ[n] - W[n]
+
+if μ[n+1] < 0:
+    μ[n+1] = μ[n+1] + 1.0
+    strobe = 1
+
+# 6. **NEDEN BAŞLANGIÇ DEĞERLERİ ÖNEMLİ DEĞİL?**
+
+### **Rice'ın Kitabı - Section 8.4:**
+
+> "The timing loop **adapts** to the unknown timing offset through feedback"
+
+**PLL dinamik olarak ayarlanır!**
+
+**Örnek:**
+```
+Başlangıç:
+mu = 0.0, W = 1.0  (yanlış tahmin!)
+
+10 sembol sonra (PLL kilitlendikten sonra):
+mu ≈ 0.37, W ≈ 1.003  (doğru değerler!)
+```
+
+**İlk ~50-100 sembol** yanlış olabilir, sonra **PLL kilitlenir**! ✓
+
+
+Underflow = Bir sembol periyodu geçti!
+
+
+decisions_i = zeros(max_symbols, 1);  % Boş dizi (2100 uzunlukta)
+
+% 1. sembol bulundu:
+symbol_count = 1
+decisions_i(1) = +1  ← 1. sembol kararı
+
+# 2. sembol bulundu:
+symbol_count = 2
+decisions_i(2) = -1  ← 2. sembol kararı
+
+# 3. sembol bulundu:
+symbol_count = 3
+decisions_i(3) = +1  ← 3. sembol kararı
+
+
+sign(5.3) = +1
+sign(0.1) = +1
+sign(0) = 0
+sign(-0.7) = -1
+sign(-10) = -1
+
+### **Rice'ın Kitabı - Section 8.5:**
+
+> "The **interpolator output** is the matched filter output sampled at the **optimal sampling instant**"
+
+**interp_i** = Interpolatör çıkışı = **Optimal örnekleme noktasındaki değer**!
+
+**Akış:**
+```
+Matched filter → Interpolator → sign() → Decision
+     ↓               ↓            ↓         ↓
+  Temiz sinyal   Doğru nokta   Eşik     Bit/Sembol
+
+Neden 1/0 değil?
+
+TED hesabı için +1/-1 lazım!
+Sonra bitlere çevirebiliriz:
+
+Şimdi:
+decisions_i = [+1, -1, +1, -1, ...]
+
+% Sonra (bit'e çevir):
+bits = (decisions_i > 0)  → [1, 0, 1, 0, ...]
+
+
+% İnterpolatör çıkışlarına bak:
+interp_i = 2.3   (pozitif!)
+interp_q = -1.5  (negatif!)
+
+% Karar ver (sign kullan):
+decisions_i(symbol_count) = sign(2.3) = +1   ← Diziye kaydet!
+decisions_q(symbol_count) = sign(-1.5) = -1  ← Diziye kaydet!
+
+
+
+Her sembol bulunduğunda o anki mu değerini kaydet
+mu_history(symbol_count) = mu;
+
+1. sembol bulundu:
+  mu = 0.37
+  mu_history(1) = 0.37
+
+2. sembol bulundu:
+  mu = 0.42
+  mu_history(2) = 0.42
+
+3. sembol bulundu:
+  mu = 0.38
+  mu_history(3) = 0.38
+
+...
+
+mu_history = [0.37, 0.42, 0.38, 0.35, 0.36, 0.36, ...]
+
+
+### **Rice'ın Sitesi - Exercise:**
+
+"Plot the **fractional interpolation interval (mu)** and use this plot to estimate **how long** (measured in symbols) it took for your timing PLL to **lock**" 
+
+**Amaç:** **Grafik çizmek!**
+
+**Ne gösterir?**
+```
+mu zamanla nasıl değişiyor?
+    ↓
+PLL ne kadar sürede kilitleniyor?
+
+
+% Döngü bitti...
+
+% Grafik çiz:
+figure;
+plot(mu_history);
+title('Fractional Interpolation Interval (μ)');
+xlabel('Symbol Index');
+ylabel('μ');
+grid on;
+
+
+2. Dizileri kırpmak:
+matlab% Döngü bitti, ama diziler max_symbols uzunlukta!
+decisions_i = zeros(2100, 1);  % Boş dizi
+
+% Sadece symbol_count kadar dolu!
+decisions_i = decisions_i(1:symbol_count);  ← Gerçek sembol sayısı kadar kes!
+
+
+% Kaç sembol var bilmeliyiz!
+for k = 1:symbol_count-15
+    % SYNC ara...
+end
+
+
+QPSK sinyalinden sembolleri çıkar
+Timing offset bilinmiyor → PLL ile bul!
+SYNC pattern bul
+ASCII mesajı çıkar
