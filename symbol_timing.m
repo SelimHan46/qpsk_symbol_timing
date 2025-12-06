@@ -56,9 +56,9 @@ mf_q_ds = mf_q(1:4:end);  % TED için 2 samples/symbol gerekli
 
 
 % ortalama gücünün 1 civarında olması gerekir.
-avg_power = mean(abs(mf_i_ds) + abs(mf_q_ds));
-mf_i_ds = mf_i_ds / avg_power;
-mf_q_ds = mf_q_ds / avg_power;
+rms_power = sqrt(mean(mf_i_ds.^2 + mf_q_ds.^2));
+mf_i_ds = mf_i_ds / rms_power;
+mf_q_ds = mf_q_ds / rms_power;
 
 %  8 samples/symbol → 2 samples/symbol (diyagramda N÷2 bloğu)
 
@@ -149,17 +149,15 @@ while idx <= N-3 && symbol_count < max_symbols
     
   
     mu = mu - W;
-    
+
     % Underflow kontrolü
     if mu < 0
-        mu = mu + 1.0;          % Modulo-1: geri sar
-        strobe = 1;             % Yeni sembol hazır
-       % idx = idx + 1;          % Bir sonraki örneğe geç
+        mu = mu - floor(mu);  % Doğru modulo-1: [0,1) aralığına getir
+        strobe = 1;
     else
         strobe = 0;
     end
-    
-   
+       
     if strobe
         symbol_count = symbol_count + 1;
         
@@ -172,11 +170,21 @@ while idx <= N-3 && symbol_count < max_symbols
         ted_i = (interp_i - prev_i) * decisions_i(symbol_count);
         ted_q = (interp_q - prev_q) * decisions_q(symbol_count);
         ted_out = ted_i + ted_q;
+
+        % ★ RICE: TED LİMİT
+        ted_out = max(min(ted_out, 2.0), -2.0);
         
         % LOOP FILTER (PI Controller)
         vp = K1 * ted_out;              % Proportional
         vi = vi + K2 * ted_out;         % Integral
+        
+        % ★ RICE: INTEGRATOR LİMİT
+        vi = max(min(vi, 0.5), -0.5);
+
         W = 1.0 + vp + vi;              % NCO kontrol güncelle
+
+        % ★ RICE: NCO LİMİT
+        W = max(min(W, 1.5), 0.5);
         
         % MU history kaydet 
         mu_history(symbol_count) = mu;
