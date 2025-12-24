@@ -1,201 +1,128 @@
+%% ==============================================================================
+%  QPSK RECEIVER PROJECT - FINAL SUBMISSION
+%  Mesaj: "the crowd with Kuzco in the back of his cart..."
+%  Ayarlar: Non-Differential | 7-Bit ASCII | Map: [2 3 1 0]
+% ==============================================================================
+clc; clear; close all;
 
-Ns = 8;          % Örnekleme/bit
-fc = 0.3;        % Taşıyıcı frekansı
-alpha = 0.5;     % SRRC fazla bant genişliği (excess bandwidth)
-span = 12;       % SRRC filtre uzunluğu (sembol cinsinden)
-sps = 4;         % Sembol başına örnek sayısı (8/2 = 4)
+%% 1. AYARLAR VE YÜKLEME
+sps = 8; roll = 0.5; span = 12; fc = 0.30;
+BnTb = 0.001; BnTs = BnTb * 2; zeta = 0.7071; % Timing Loop
+denom = (zeta + 1/(4*zeta)); Kp = (4 * zeta * BnTs) / denom; Ki = (4 * BnTs^2) / denom;
 
-% Dosyayı yükle 
-load('qpsktrdata.mat');
+fprintf('Sinyal Yükleniyor...\n');
+load('qpsktrdata.mat'); 
+if exist('r', 'var'), if isa(r, 'timeseries'), raw=r.Data; elseif isstruct(r), raw=r.Data; else, raw=r; end; else, error('r yok'); end
+signal = double(squeeze(raw)); 
 
-% whos
-
-% r
-
-% Sinyali al
-signal = r.Data;
-
-% 3D array'i düzleştir (flatten) - 1D yap
-signal = squeeze(signal);  % [1x1x17989] → [17989x1]
-
-
-% Taşıyıcıyı kaldır (I ve Q'ya ayır)
-
-% Zaman indeksleri: 0,1,2,3,...
-% Yüksek frekanstaki sinyali baseband'e (düşük frekansa) çekmek
+% Baseband Dönüşümü
 n = 0:length(signal)-1;
+r_baseband = signal .* exp(-1j * 2 * pi * fc * n');
 
-r_i = signal .* cos(2*pi*fc*n)';
+% Matched Filter (SRRC)
+h = rcosdesign(roll, span, sps, 'sqrt'); h = h / max(h); 
+rx_filt = conv(r_baseband, h); rx_filt = rx_filt((length(h)-1)/2+1:end-(length(h)-1)/2);
 
-r_q = signal .* sin(2*pi*fc*n)';
+%% 2. TIMING RECOVERY (GARDNER)
+fprintf('Timing Recovery (Gardner) çalışıyor...\n');
+W = 2/sps; CNT = 1; mu = 0; vi = 0;
+interp_out = zeros(length(rx_filt), 1); strobe_indices = []; k_out = 0;
+prev = 0; mid = 0; is_strobe = false;
 
-% SRRC Matched Filter
-h = rcosdesign(alpha, span, sps, 'sqrt');     % SRRC filtre katsayıları
-h = h / max(abs(h));                          % Normalize et (max=1)
-% Filtrenin en büyük değeri 1 olsun
-
-% Filtre gecikme yaratır
-% Ortadaki orijinal sinyali al
-delay = (length(h)-1)/2;  
-
-
-
-% Filtreleme
-mf_i = conv(r_i, h);
-mf_q = conv(r_q, h);
-
-% conv() fonksiyonu filtre uygularken başa ve sona sıfırlar ekler.
-% Bunlar bizim gerçek verimiz değil
-
-mf_i = mf_i(delay+1:end-delay);
-mf_q = mf_q(delay+1:end-delay);
-
-% Downsampling (8 samples/symbol → 2 samples/symbol)
-mf_i_ds = mf_i(1:4:end);  % Her 4. örneği al (8→2 samples/symbol)
-mf_q_ds = mf_q(1:4:end);  % TED için 2 samples/symbol gerekli
-
-
-% ortalama gücünün 1 civarında olması gerekir.
-rms_power = sqrt(mean(mf_i_ds.^2 + mf_q_ds.^2));
-mf_i_ds = mf_i_ds / rms_power;
-mf_q_ds = mf_q_ds / rms_power;
-
-%  8 samples/symbol → 2 samples/symbol (diyagramda N÷2 bloğu)
-
-% Timing PLL Parametreleri
-normalized_bandwidth = 0.01;    % BnTs (normalize gürültü bant genişliği)
-damping_factor = 0.7071;        % zeta (sönümleme faktörü)
-
-% Loop Filter Kazançları
-theta = normalized_bandwidth / (damping_factor + 1/(4*damping_factor));
-d = 1 + 2*damping_factor*theta + theta^2;
-K1 = (4*damping_factor*theta) / d;
-K2 = (4*theta^2) / d;
-
-
-
-
-% K1 → Anlık hatayı düzeltir (proportional)
-% Büyükse: Hızlı tepki verir ama sallanır
-% Küçükse: Yavaş ama stabil
-
-
-% K2 (Integral gain) → Hatayı düzeltme gücü
-% K2 → Birikmiş hatayı düzeltir (integral)
-
-% Büyükse: Hatayı hızlı sıfırlar
-% Küçükse: Yavaş düzeltir
-
-% Timing Loop için hazırlık
-N = length(mf_i_ds);                    % Kaç örnek var?
-max_symbols = ceil(N/2) + 100;          % Maksimum sembol sayısı
-
-% Çıkış dizileri
-decisions_i = zeros(max_symbols, 1);
-decisions_q = zeros(max_symbols, 1);
-mu_history = zeros(max_symbols, 1);
-
-
-% Başlangıç değerleri
-mu = 0.0;           % Kesirli interpolasyon aralığı (0-1 arası, μ okuruz)
-                    % İki örnek arasında neredeysek (0=başta, 1=sonda)
-                    
-W = 1.0;            % NCO kontrol kelimesi (sayaç hızı)
-                    % Loop filter bu değeri ayarlayarak timing'i düzeltir
-                    
-vi = 0;             % Integral state (loop filter'ın hafızası)
-                    % Geçmişteki hataların birikmiş toplamı
-                    % Başlangıçta 0 (henüz hata birikmedi)
-                    
-symbol_count = 0;   % Bulunan sembol sayısı (sayaç)
-                    % Her strobe olduğunda +1 artacak
-
-
- % bir defaya mahsus değil tum n ler için tum ornakerli for da yap her donus için yap
-
- % Farrow interpolator için buffer
-buffer_i = zeros(4, 1);
-buffer_q = zeros(4, 1);
-
-% TED için önceki örnek
-prev_i = 0;
-prev_q = 0;
-
-idx = 1; 
-
-
-
- % Her örnek için çalış!
-while idx <= N-3 && symbol_count < max_symbols
-    
-   
-    buffer_i = [mf_i_ds(idx); mf_i_ds(idx+1); mf_i_ds(idx+2); mf_i_ds(idx+3)];
-    buffer_q = [mf_q_ds(idx); mf_q_ds(idx+1); mf_q_ds(idx+2); mf_q_ds(idx+3)];
-    
-   
-    % v0, v1, v2 katsayıları hesapla
-    v0_i = buffer_i(2);
-    v0_q = buffer_q(2);
-    
-    v1_i = 0.5 * (buffer_i(3) - buffer_i(1));
-    v1_q = 0.5 * (buffer_q(3) - buffer_q(1));
-    
-    v2_i = 0.5 * (buffer_i(3) + buffer_i(1)) - buffer_i(2);
-    v2_q = 0.5 * (buffer_q(3) + buffer_q(1)) - buffer_q(2);
-    
-    % İnterpolasyon: y(mu) = v0 + v1*mu + v2*mu^2
-    interp_i = v0_i + v1_i*mu + v2_i*mu^2;
-    interp_q = v0_q + v1_q*mu + v2_q*mu^2;
-    
-  
-    mu = mu - W;
-
-    % Underflow kontrolü
-    if mu < 0
-        mu = mu - floor(mu);  % Doğru modulo-1: [0,1) aralığına getir
-        strobe = 1;
-    else
-        strobe = 0;
+for i = 2 : length(rx_filt)-2
+    buf = rx_filt(i-1 : i+1); CNT = CNT - W;
+    if CNT < 0
+        mu = CNT/W; v0=buf(2); v1=0.5*(buf(3)-buf(1)); v2=0.5*(buf(3)+buf(1))-buf(2);
+        curr = v0 + v1*(mu+1) + v2*(mu+1)^2;
+        k_out = k_out + 1; interp_out(k_out) = curr;
+        if is_strobe
+            err = real((curr - prev) * conj(mid)); vi = vi + Ki * err; W = (2/sps) + Kp * err + vi;
+            strobe_indices(end+1) = k_out; prev = curr; is_strobe = false;
+        else, mid = curr; is_strobe = true; end
+        CNT = CNT + 1;
     end
-       
-    if strobe
-        symbol_count = symbol_count + 1;
-        
-       
-        decisions_i(symbol_count) = sign(interp_i);
-        decisions_q(symbol_count) = sign(interp_q);
-        
-        % TED (Early-Late Timing Error Detector)
-        % e[k] = (y[k] - y[k-1]) * d[k]
-        ted_i = (interp_i - prev_i) * decisions_i(symbol_count);
-        ted_q = (interp_q - prev_q) * decisions_q(symbol_count);
-        ted_out = ted_i + ted_q;
+end
+sys_symbols = interp_out(strobe_indices);
 
-        % ★ RICE: TED LİMİT
-        ted_out = max(min(ted_out, 2.0), -2.0);
-        
-        % LOOP FILTER (PI Controller)
-        vp = K1 * ted_out;              % Proportional
-        vi = vi + K2 * ted_out;         % Integral
-        
-        % ★ RICE: INTEGRATOR LİMİT
-        vi = max(min(vi, 0.5), -0.5);
+%% 3. CARRIER RECOVERY (COSTAS LOOP)
+fprintf('Carrier Recovery çalışıyor...\n');
+BnTs_pll = 0.005; Kp_pll = 2 * zeta * BnTs_pll; Ki_pll = 2 * BnTs_pll^2;
+phase = 0; integ_pll = 0; corrected_symbols = zeros(length(sys_symbols), 1);
 
-        W = 1.0 + vp + vi;              % NCO kontrol güncelle
-
-        % ★ RICE: NCO LİMİT
-        W = max(min(W, 1.5), 0.5);
-        
-        % MU history kaydet 
-        mu_history(symbol_count) = mu;
-        
-        % Önceki örnekleri güncelle (TED için)
-        prev_i = interp_i;
-        prev_q = interp_q;
-    end
-    
-    idx = idx + 1;  % Bir sonraki örneğe
+for k = 1:length(sys_symbols)
+    rot = sys_symbols(k) * exp(-1j * phase); corrected_symbols(k) = rot;
+    perr = imag(rot)*sign(real(rot)) - real(rot)*sign(imag(rot));
+    integ_pll = integ_pll + Ki_pll * perr; phase = phase + Kp_pll * perr + integ_pll;
+    phase = mod(phase, 2*pi);
 end
 
-fprintf('Toplam %d sembol bulundu.\n', symbol_count);
-                  
+%% 4. FRAME SYNC (BARKER 13)
+% Sinyalin 270 derecede kilitlendiğini tespit etmiştik.
+rot_270 = corrected_symbols * exp(-1j * 3*pi/2);
+
+% Barker Deseni (Raw Bits)
+bits_raw = zeros(2*length(rot_270), 1);
+bits_raw(1:2:end) = real(rot_270)>0; bits_raw(2:2:end) = imag(rot_270)>0;
+barker = [1 1 1 1 1 0 0 1 1 0 1 0 1]';
+c = xcorr(2*bits_raw-1, 2*barker-1);
+[max_val, lag_idx] = max(c);
+
+start_idx = lag_idx - length(bits_raw) + 1;
+header_end_sym = ceil((start_idx + 13) / 2);
+payload_syms = rot_270(header_end_sym : end);
+
+fprintf('Barker Peak: %.1f (Kilitlendi)\n', max_val);
+
+%% 5. DECODING (NON-DIFFERENTIAL, 7-BIT)
+fprintf('\n================================================\n');
+fprintf('MESAJ ÇÖZÜLÜYOR...\n');
+fprintf('================================================\n');
+
+% Sembollerin Çeyreklerini Bul (0, 1, 2, 3)
+% Non-Differential olduğu için direkt fazlarına bakıyoruz.
+% Eksenlere göre karar veriyoruz (I,Q işaretleri).
+quadrants = zeros(length(payload_syms), 1);
+for k=1:length(payload_syms)
+    s = payload_syms(k);
+    if real(s)>0 && imag(s)>0, q=0;      % 1. Bölge
+    elseif real(s)<0 && imag(s)>0, q=1;  % 2. Bölge
+    elseif real(s)<0 && imag(s)<0, q=2;  % 3. Bölge
+    else, q=3; end                       % 4. Bölge
+    quadrants(k) = q;
+end
+
+% Harita: [2 3 1 0] (Mega Tarayıcı ile bulundu)
+% 0->2(10), 1->3(11), 2->1(01), 3->0(00)
+custom_map = [2, 3, 1, 0];
+
+bit_stream = [];
+for k = 1:length(quadrants)
+    val = custom_map(quadrants(k) + 1);
+    % 2 bit ekle
+    bit_stream = [bit_stream, bitget(val, 2), bitget(val, 1)];
+end
+
+% 7-BIT ASCII ÇEVİRİMİ
+msg = '';
+num_chars = floor(length(bit_stream)/7);
+
+for k = 1:num_chars
+    % 7 bitlik paket al
+    chunk = bit_stream((k-1)*7+1 : k*7);
+    % Decimal'e çevir (Left-MSB)
+    val = bi2de(chunk(:)', 'left-msb');
+    
+    if val >= 32 && val <= 126
+        msg(end+1) = char(val);
+    else
+        msg(end+1) = '?'; % Okunamayan karakter
+    end
+end
+
+fprintf('ÇÖZÜLEN MESAJ:\n%s\n', msg);
+fprintf('================================================\n');
+
+%% 6. GRAFİKLER
+figure('Name','Final QPSK Results','Position',[100,100,1000,500]);
+subplot(1,2,1); plot(sys_symbols(500:end-500),'.'); title('Timing Output'); grid on; axis square;
+subplot(1,2,2); plot(corrected_symbols(500:end-500),'.'); title('Carrier Output (Locked)'); grid on; axis square; xlim([-2 2]); ylim([-2 2]);
